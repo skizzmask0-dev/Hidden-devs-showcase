@@ -1,0 +1,556 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local PlayerGui = player:WaitForChild("PlayerGui")
+local character = player.Character or player.CharacterAdded:Wait()
+local hrp = character:WaitForChild("HumanoidRootPart")
+
+player.CharacterAdded:Connect(function(newChar)
+	character = newChar
+	hrp = newChar:WaitForChild("HumanoidRootPart")
+end)
+
+local NotifModule = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("NotificationModule"))
+
+local dataFolder = player:WaitForChild("Data", 30)
+if not dataFolder then return end
+
+local tutorialVal = dataFolder:WaitForChild("Tutorial", 15)
+if not tutorialVal or tutorialVal.Value then return end
+
+local invFolder = dataFolder:WaitForChild("Inventory")
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local TutorialDone = Remotes:FindFirstChild("TutorialDone") or Remotes:WaitForChild("TutorialDone", 10)
+
+local TutUI = PlayerGui:WaitForChild("TutUI", 15)
+if not TutUI then return end
+
+local Arrow = TutUI:FindFirstChild("Arrow")
+if not Arrow then return end
+
+local arrowConn = nil
+
+local function stopArrow()
+	if arrowConn then arrowConn:Disconnect(); arrowConn = nil end
+end
+
+local function moveArrow(basePos, axis)
+	stopArrow()
+	Arrow.Visible = true
+	Arrow.Position = basePos
+	local t = 0
+	arrowConn = RunService.Heartbeat:Connect(function(dt)
+		t += dt
+		local offset = math.sin(t * 2.5) * 0.008
+		if axis == "y" then
+			Arrow.Position = UDim2.new(basePos.X.Scale, basePos.X.Offset, basePos.Y.Scale + offset, basePos.Y.Offset)
+		else
+			Arrow.Position = UDim2.new(basePos.X.Scale + offset, basePos.X.Offset, basePos.Y.Scale, basePos.Y.Offset)
+		end
+	end)
+end
+
+local function hideArrow()
+	stopArrow()
+	Arrow.Visible = false
+	Arrow.Rotation = 0
+end
+
+local function showArrow(pos, rotation, drift)
+	Arrow.Rotation = rotation or 0
+	moveArrow(pos, drift and "x" or "y")
+end
+
+local activeBeam, beamAtt0, beamAtt1 = nil, nil, nil
+local beamTemplate = ReplicatedStorage:FindFirstChild("BeamTemplate")
+
+local function createBeam(targetPart)
+	if activeBeam then activeBeam:Destroy() end
+	if beamAtt0 then beamAtt0:Destroy() end
+	if beamAtt1 then beamAtt1:Destroy() end
+	if not hrp or not targetPart or not beamTemplate then return end
+
+	beamAtt0 = beamTemplate.Attachment0Template:Clone()
+	beamAtt0.Parent = hrp
+	beamAtt1 = beamTemplate.Attachment1Template:Clone()
+	beamAtt1.Parent = targetPart
+
+	activeBeam = beamTemplate.Beam:Clone()
+	activeBeam.Attachment0 = beamAtt0
+	activeBeam.Attachment1 = beamAtt1
+	activeBeam.Parent = hrp
+end
+
+local function removeBeam()
+	if activeBeam then activeBeam:Destroy(); activeBeam = nil end
+	if beamAtt0 then beamAtt0:Destroy(); beamAtt0 = nil end
+	if beamAtt1 then beamAtt1:Destroy(); beamAtt1 = nil end
+end
+
+local function waitUntilClose(targetPart, radius)
+	while true do
+		task.wait(0.5)
+		if hrp and hrp.Parent and (hrp.Position - targetPart.Position).Magnitude <= radius then
+			break
+		end
+	end
+end
+
+local function getPlayerInstrument()
+	local Bunkers = workspace:FindFirstChild("Bunkers")
+	if not Bunkers then return nil end
+	for _, bunker in ipairs(Bunkers:GetChildren()) do
+		local owner = bunker:FindFirstChild("Owner")
+		if owner and owner.Value == player.Name then
+			local num = tonumber(bunker.Name:match("%d+"))
+			local instrName = num == 1 and "Instrument" or ("Instrument" .. num)
+			return workspace:FindFirstChild(instrName)
+		end
+	end
+	return nil
+end
+
+local function completeTutorial()
+	NotifModule.ClearTutorial()
+	hideArrow()
+	removeBeam()
+
+	pcall(function()
+		MarketplaceService:PromptProductPurchase(player, 3604626852)
+	end)
+
+	NotifModule.Notify("🎉 Tutorial complete! Have fun in Candy Empire!")
+
+	if TutorialDone then
+		TutorialDone:FireServer()
+	end
+end
+
+local step1_clickCity, step3_goToShop, step4_openShop, step5_buySugarBase
+local step6_goToBunker, step7_goToCookPart, step8_openCooking, step9_selectSugarBase
+local step10_pressCook, step11_clickCity2, step12_openNPCs, step13_trackNPC
+local step14_closeTracker, step15_spawnCar, step16_driveToNPC, step17_openSell, step18_sellCandy
+
+step1_clickCity = function()
+	showArrow(UDim2.new(0.554, 0, 0.12, 0), 90, false)
+	NotifModule.NotifyTutorial("👆 Click on CITY!")
+
+	local CitySpawn = workspace:FindFirstChild("CitySpawn")
+		or (workspace:FindFirstChild("City") and workspace.City:FindFirstChild("CitySpawn"))
+
+	if not CitySpawn then
+		hideArrow(); NotifModule.ClearTutorial()
+		step3_goToShop(); return
+	end
+
+	while true do
+		task.wait(0.5)
+		if hrp and hrp.Parent and (hrp.Position - CitySpawn.Position).Magnitude <= 20 then break end
+	end
+
+	hideArrow(); NotifModule.ClearTutorial()
+	step3_goToShop()
+end
+
+step3_goToShop = function()
+	NotifModule.NotifyTutorial("🏪 Go to the Shop!")
+
+	local CityFolder = workspace:FindFirstChild("City")
+	local Walt = CityFolder and CityFolder:FindFirstChild("Walt")
+	local waltHRP = Walt and Walt:FindFirstChild("HumanoidRootPart")
+
+	if not waltHRP then step4_openShop(); return end
+
+	createBeam(waltHRP)
+	waitUntilClose(waltHRP, 15)
+	removeBeam(); NotifModule.ClearTutorial()
+	step4_openShop()
+end
+
+step4_openShop = function()
+	NotifModule.NotifyTutorial("🛒 Open the Shop!")
+
+	local opened = false
+	local conns = {}
+
+	local function checkGui(sg)
+		if not sg:IsA("ScreenGui") then return end
+		if sg.Name == "GameShop" or sg.Name == "ShopUI" then
+			table.insert(conns, sg:GetPropertyChangedSignal("Enabled"):Connect(function()
+				if sg.Enabled then opened = true end
+			end))
+			if sg.Enabled then opened = true end
+		end
+	end
+
+	for _, sg in ipairs(PlayerGui:GetChildren()) do checkGui(sg) end
+	local ac = PlayerGui.ChildAdded:Connect(checkGui)
+	while not opened do task.wait(0.2) end
+	for _, c in ipairs(conns) do c:Disconnect() end
+	ac:Disconnect()
+
+	NotifModule.ClearTutorial()
+	step5_buySugarBase()
+end
+
+step5_buySugarBase = function()
+	showArrow(UDim2.new(0.795, 0, 0.41, 0), 0, true)
+	NotifModule.NotifyTutorial("🛍 Buy a Sugar Base!")
+
+	local function checkInv()
+		for _, slot in ipairs(invFolder:GetChildren()) do
+			if slot:IsA("StringValue") and slot.Value:lower():find("sugarbase") then return true end
+		end
+		return false
+	end
+
+	if not checkInv() then
+		local found = false
+		local ac = invFolder.ChildAdded:Connect(function(child)
+			if child:IsA("StringValue") and child.Value:lower():find("sugarbase") then found = true end
+		end)
+		while not found do task.wait(0.2) end
+		ac:Disconnect()
+	end
+
+	hideArrow(); NotifModule.ClearTutorial()
+	step6_goToBunker()
+end
+
+step6_goToBunker = function()
+	showArrow(UDim2.new(0.42, 0, 0.12, 0), 90, false)
+	NotifModule.NotifyTutorial("👆 Click on BUNKER!")
+
+	local Bunkers = workspace:WaitForChild("Bunkers")
+	local spawnParts = {}
+	for _, bunker in ipairs(Bunkers:GetChildren()) do
+		local sp = bunker:FindFirstChild("Spawn")
+		if sp then table.insert(spawnParts, sp) end
+	end
+
+	if #spawnParts == 0 then
+		hideArrow()
+		step7_goToCookPart(); return
+	end
+
+	local reached = false
+	while not reached do
+		task.wait(0.5)
+		if hrp and hrp.Parent then
+			for _, sp in ipairs(spawnParts) do
+				if (hrp.Position - sp.Position).Magnitude <= 20 then reached = true; break end
+			end
+		end
+	end
+
+	hideArrow(); NotifModule.ClearTutorial()
+	step7_goToCookPart()
+end
+
+step7_goToCookPart = function()
+	local instrument = nil
+	local attempts = 0
+	while not instrument and attempts < 20 do
+		instrument = getPlayerInstrument()
+		if not instrument then task.wait(0.5); attempts += 1 end
+	end
+
+	if not instrument then step8_openCooking(); return end
+
+	local cookPart = instrument:FindFirstChild("CookPart")
+	if not cookPart then step8_openCooking(); return end
+
+	NotifModule.NotifyTutorial("🍳 Go to your Cooking Station!")
+	createBeam(cookPart)
+	waitUntilClose(cookPart, 10)
+	removeBeam(); NotifModule.ClearTutorial()
+	step8_openCooking()
+end
+
+step8_openCooking = function()
+	NotifModule.NotifyTutorial("🔓 Open the Cooking Station!")
+
+	local opened = false
+	while not opened do
+		task.wait(0.3)
+		local cUI = PlayerGui:FindFirstChild("CookingUI")
+		if cUI and cUI.Enabled then opened = true end
+	end
+
+	NotifModule.ClearTutorial()
+	step9_selectSugarBase()
+end
+
+step9_selectSugarBase = function()
+	NotifModule.NotifyTutorial("✅ Select your Sugar Base ingredient!")
+
+	local selected = false
+
+	local function watchSelectedHolder()
+		local cUI = PlayerGui:FindFirstChild("CookingUI")
+		if not cUI then return end
+		local sel = cUI:FindFirstChild("Selected")
+		if not sel then return end
+		sel.DescendantAdded:Connect(function(desc)
+			if desc:IsA("ViewportFrame") then selected = true end
+		end)
+	end
+
+	watchSelectedHolder()
+
+	task.spawn(function()
+		while not selected do
+			task.wait(0.5)
+			local cUI = PlayerGui:FindFirstChild("CookingUI")
+			if not cUI then continue end
+			local sel = cUI:FindFirstChild("Selected")
+			if not sel then continue end
+			for _, d in ipairs(sel:GetDescendants()) do
+				if d:IsA("ViewportFrame") then selected = true; break end
+			end
+		end
+	end)
+
+	while not selected do task.wait(0.2) end
+	NotifModule.ClearTutorial()
+	step10_pressCook()
+end
+
+step10_pressCook = function()
+	NotifModule.NotifyTutorial("🍬 Press the COOK button!")
+
+	local cooked = false
+	local CookingComplete = Remotes:FindFirstChild("CookingComplete") or Remotes:WaitForChild("CookingComplete", 10)
+
+	if CookingComplete then
+		local conn = CookingComplete.OnClientEvent:Connect(function(candy, err)
+			if candy and not err then cooked = true end
+		end)
+		while not cooked do task.wait(0.2) end
+		conn:Disconnect()
+	else
+		task.wait(15)
+	end
+
+	task.wait(3)
+	NotifModule.ClearTutorial()
+	step11_clickCity2()
+end
+
+step11_clickCity2 = function()
+	showArrow(UDim2.new(0.554, 0, 0.12, 0), 90, false)
+	NotifModule.NotifyTutorial("👆 Click on CITY!")
+
+	local CitySpawn = workspace:FindFirstChild("CitySpawn")
+		or (workspace:FindFirstChild("City") and workspace.City:FindFirstChild("CitySpawn"))
+
+	if not CitySpawn then
+		hideArrow(); NotifModule.ClearTutorial()
+		step12_openNPCs(); return
+	end
+
+	while true do
+		task.wait(0.5)
+		if hrp and hrp.Parent and (hrp.Position - CitySpawn.Position).Magnitude <= 25 then break end
+	end
+
+	hideArrow(); NotifModule.ClearTutorial()
+	step12_openNPCs()
+end
+
+step12_openNPCs = function()
+	showArrow(UDim2.new(0.41, 0, 0.82, 0), 180, false)
+	NotifModule.NotifyTutorial("👇 Open the NPCS panel!")
+
+	local opened = false
+	local TrackerUI = PlayerGui:FindFirstChild("TrackerUI")
+
+	local function checkTracker(sg)
+		if sg.Name == "TrackerUI" then
+			sg:GetPropertyChangedSignal("Enabled"):Connect(function()
+				if sg.Enabled then opened = true end
+			end)
+			if sg.Enabled then opened = true end
+		end
+	end
+
+	if TrackerUI then checkTracker(TrackerUI) end
+	local ac = PlayerGui.ChildAdded:Connect(checkTracker)
+	while not opened do task.wait(0.2) end
+	ac:Disconnect()
+
+	hideArrow(); NotifModule.ClearTutorial()
+	step13_trackNPC()
+end
+
+step13_trackNPC = function()
+	NotifModule.NotifyTutorial("📍 Click Track on any NPC!")
+
+	local tracked = false
+	while not tracked do
+		task.wait(0.3)
+		if PlayerGui:FindFirstChild("TrackMarker", true) then tracked = true end
+	end
+
+	NotifModule.ClearTutorial()
+	step14_closeTracker()
+end
+
+step14_closeTracker = function()
+	showArrow(UDim2.new(0.41, 0, 0.82, 0), 180, false)
+	NotifModule.NotifyTutorial("❌ Close the NPC Tracker!")
+
+	local closed = false
+	local TrackerUI = PlayerGui:FindFirstChild("TrackerUI")
+
+	if TrackerUI then
+		local conn = TrackerUI:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if not TrackerUI.Enabled then closed = true end
+		end)
+		while not closed do task.wait(0.2) end
+		conn:Disconnect()
+	end
+
+	hideArrow(); NotifModule.ClearTutorial()
+	step15_spawnCar()
+end
+
+step15_spawnCar = function()
+	showArrow(UDim2.new(0.58, 0, 0.82, 0), 180, false)
+	NotifModule.NotifyTutorial("🚗 Spawn your Car!")
+
+	local spawned = false
+	local SpawnJeepEvt = Remotes:FindFirstChild("SpawnJeep")
+	local evtConn = nil
+
+	if SpawnJeepEvt then
+		evtConn = SpawnJeepEvt.OnClientEvent:Connect(function()
+			spawned = true
+		end)
+	end
+
+	local pollConn = RunService.Heartbeat:Connect(function()
+		if spawned then return end
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if (obj:IsA("VehicleSeat") or obj:IsA("Seat")) and obj.Occupant and obj.Occupant.Parent == character then
+				spawned = true
+			end
+		end
+	end)
+
+	local carWatch = workspace.ChildAdded:Connect(function(child)
+		if child.Name:lower():find("jeep") or child.Name:lower():find("car") then
+			task.wait(0.5)
+			spawned = true
+		end
+	end)
+
+	while not spawned do task.wait(0.2) end
+
+	if evtConn then evtConn:Disconnect() end
+	pollConn:Disconnect()
+	carWatch:Disconnect()
+
+	hideArrow(); NotifModule.ClearTutorial()
+	step16_driveToNPC()
+end
+
+step16_driveToNPC = function()
+	NotifModule.NotifyTutorial("🚗 Drive to the tracked NPC!")
+
+	local function findTrackedNPC()
+		local marker = PlayerGui:FindFirstChild("TrackMarker", true)
+		if marker then
+			local bb = marker:IsA("BillboardGui") and marker or marker.Parent
+			if bb and bb:IsA("BillboardGui") and bb.Adornee then
+				local model = bb.Adornee.Parent
+				if model then
+					local h = model:FindFirstChild("HumanoidRootPart")
+					if h then return h end
+				end
+			end
+		end
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if obj.Name == "HumanoidRootPart" and obj.Parent:FindFirstChildOfClass("Humanoid") then
+				local isPlayer = false
+				for _, p in ipairs(Players:GetPlayers()) do
+					if p.Character == obj.Parent then isPlayer = true; break end
+				end
+				if not isPlayer then return obj end
+			end
+		end
+		return nil
+	end
+
+	local npcHRP, attempts = nil, 0
+	while not npcHRP and attempts < 20 do
+		npcHRP = findTrackedNPC()
+		if not npcHRP then task.wait(0.5); attempts += 1 end
+	end
+
+	if not npcHRP then step17_openSell(); return end
+
+	createBeam(npcHRP)
+	waitUntilClose(npcHRP, 12)
+	removeBeam(); NotifModule.ClearTutorial()
+	step17_openSell()
+end
+
+step17_openSell = function()
+	NotifModule.NotifyTutorial("🤝 Talk to the NPC to Sell!")
+
+	local opened = false
+
+	local function checkSellUI(sg)
+		if sg.Name == "SellUI" and sg:IsA("ScreenGui") then
+			sg:GetPropertyChangedSignal("Enabled"):Connect(function()
+				if sg.Enabled then opened = true end
+			end)
+			if sg.Enabled then opened = true end
+		end
+	end
+
+	for _, sg in ipairs(PlayerGui:GetChildren()) do checkSellUI(sg) end
+	local ac = PlayerGui.ChildAdded:Connect(checkSellUI)
+	while not opened do task.wait(0.2) end
+	ac:Disconnect()
+
+	NotifModule.ClearTutorial()
+	step18_sellCandy()
+end
+
+step18_sellCandy = function()
+	NotifModule.NotifyTutorial("💰 Sell your candy!")
+
+	local sold = false
+	local SellUI = PlayerGui:FindFirstChild("SellUI")
+	local honorVal = dataFolder:FindFirstChild("Honor")
+
+	if SellUI then
+		local conn = SellUI:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if not SellUI.Enabled then sold = true end
+		end)
+		local hConn = nil
+		if honorVal then
+			local startH = honorVal.Value
+			hConn = honorVal:GetPropertyChangedSignal("Value"):Connect(function()
+				if honorVal.Value > startH then sold = true end
+			end)
+		end
+		while not sold do task.wait(0.2) end
+		conn:Disconnect()
+		if hConn then hConn:Disconnect() end
+	else
+		task.wait(10)
+	end
+
+	task.wait(1)
+	completeTutorial()
+end
+
+task.wait(2)
+step1_clickCity()
