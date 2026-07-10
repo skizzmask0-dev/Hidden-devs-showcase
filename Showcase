@@ -93,12 +93,7 @@ local function linesOff()
 	linesHeartbeat:Disconnect()
 	linesFX.Enabled = false
 	linesFX.Rate = 0
-end
 
--- highlight already exists on the char, just grabing a ref to it
-local function getOutline(char)
-	return char:WaitForChild("RaceOutlineHighlight")
-end
 
 if plr.Character then
 	getOutline(plr.Character)
