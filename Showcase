@@ -1,557 +1,239 @@
-discord connected 
+-- Connected Discord-GitHub | Roblox username: dragonstarkills
+-- this scrpit handles the race sequense on the cilent side, the mountign cutscene, screen flahs transtions,
+-- speedline vfx and the chase camera that folows behind the horse while race,
+
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local MarketplaceService = game:GetService("MarketplaceService")
+local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local TS = game:GetService("TweenService")
 
-local player = Players.LocalPlayer
-local PlayerGui = player:WaitForChild("PlayerGui")
-local character = player.Character or player.CharacterAdded:Wait()
-local hrp = character:WaitForChild("HumanoidRootPart")
+local plr = Players.LocalPlayer
+local cam = workspace.CurrentCamera
 
-player.CharacterAdded:Connect(function(newChar)
-	character = newChar
-	hrp = newChar:WaitForChild("HumanoidRootPart")
+local Config = require(RS:WaitForChild("RaceSystem"):WaitForChild("RaceConfig"))
+
+local Remotes = RS:WaitForChild("RaceRemotes")
+local SteerRemote = Remotes:WaitForChild("Steer")
+local EndRaceRemote = Remotes:WaitForChild("EndRace")
+local RaceStarted = Remotes:WaitForChild("RaceStarted")
+local RaceEnded = Remotes:WaitForChild("RaceEnded")
+
+local gui = plr.PlayerGui
+
+local letterbox = gui.RaceLetterbox
+local barTop = letterbox.TopBar
+local barBot = letterbox.BottomBar
+
+local function letterboxToggle(state)
+	local sz = state and UDim2.new(1, 0, 0.12, 0) or UDim2.new(1, 0, 0, 0)
+	TS:Create(barTop, TweenInfo.new(0.35), {Size = sz}):Play()
+	TS:Create(barBot, TweenInfo.new(0.35), {Size = sz}):Play()
+end
+
+local flashFrame = gui.RaceFlash.Flash
+local fadeTween
+
+local function doFlash(col, a, t)
+	if fadeTween then fadeTween:Cancel() end
+	flashFrame.BackgroundColor3 = col
+	flashFrame.BackgroundTransparency = 1 - a
+	fadeTween = TS:Create(flashFrame, TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = 1})
+	fadeTween:Play()
+end
+
+local linesRig = RS.Speedlines:Clone()
+linesRig.Parent = workspace
+
+local rigIsPart = linesRig:IsA("BasePart")
+local linesFX = linesRig.Attachment.ParticleEmitter
+linesFX.Enabled = false
+linesFX.Rate = 0
+
+local MAXRATE = Config.SPEEDLINE_MAX_RATE
+local OFF_WIDE = Config.SPEEDLINE_OFFSET_WIDE
+local OFF_NARROW = Config.SPEEDLINE_OFFSET_NARROW
+local WIDE_ASPECT = Config.SPEEDLINE_WIDE_ASPECT
+
+local linesHeartbeat
+
+local function placeLines(cf)
+	if rigIsPart then
+		linesRig.CFrame = cf
+	else
+		linesRig:PivotTo(cf)
+	end
+end
+
+-- keeps the rig infront of the cam every frame, offset scales w fov
+local function linesTick()
+	local vp = cam.ViewportSize
+	local ar = vp.X / vp.Y
+	local off = ar > WIDE_ASPECT and OFF_WIDE or OFF_NARROW
+
+	placeLines(cam.CFrame * CFrame.new(0, 0, -off / (cam.FieldOfView / 70)))
+
+	local ratio = plr:GetAttribute("RaceSpeedRatio")
+	local minR = Config.SPEEDLINE_MIN_RATIO
+	local pow = 0
+
+	if ratio > minR then
+		pow = math.clamp((ratio - minR) / (1 - minR), 0, 1)
+	end
+
+	linesFX.Rate = pow * MAXRATE
+end
+
+local function linesOn()
+	linesFX.Enabled = true
+	linesHeartbeat = RunService.RenderStepped:Connect(linesTick)
+end
+
+local function linesOff()
+	linesHeartbeat:Disconnect()
+	linesFX.Enabled = false
+	linesFX.Rate = 0
+end
+
+-- highlight already exists on the char, just grabing a ref to it
+local function getOutline(char)
+	return char:WaitForChild("RaceOutlineHighlight")
+end
+
+if plr.Character then
+	getOutline(plr.Character)
+end
+plr.CharacterAdded:Connect(getOutline)
+
+local isRacing = false
+local activeHorse
+local steer = 0
+local heldL, heldR = false, false
+local camHeartbeat
+
+local function horseRoot(m)
+	return m.PrimaryPart or m:FindFirstChild(Config.HORSE_ROOT_NAME)
+end
+
+-- horse mesh faces backwards so we gotta flip it back to get real heading
+local function travelCF(m)
+	return horseRoot(m).CFrame * Config.HORSE_FACING_OFFSET
+end
+
+local function pushSteer(v)
+	if v == steer then return end
+	steer = v
+	SteerRemote:FireServer(steer)
+end
+
+local function recalcSteer()
+	local v = 0
+	if heldR then v += 1 end
+	if heldL then v -= 1 end
+	pushSteer(v)
+end
+
+local BOB_AMP = Config.CAM_BOB_AMPLITUDE
+local BOB_FREQ = Config.CAM_BOB_FREQUENCY
+local SWAY_AMP = Config.CAM_SWAY_AMPLITUDE
+local SWAY_FREQ = Config.CAM_SWAY_FREQUENCY
+local SWAY_ROLL = Config.CAM_SWAY_ROLL
+
+-- locks cam behind horse, bob/sway ramps up the faster ur going
+local function camOn()
+	cam.CameraType = Enum.CameraType.Scriptable
+	cam.FieldOfView = Config.CAM_FOV
+
+	camHeartbeat = RunService.RenderStepped:Connect(function()
+		local tcf = travelCF(activeHorse)
+
+		local ratio = math.clamp(plr:GetAttribute("RaceSpeedRatio"), 0, 1)
+		local now = os.clock()
+
+		local bob = math.sin(now * BOB_FREQ) * BOB_AMP * ratio
+		local sway = math.sin(now * SWAY_FREQ) * SWAY_AMP * ratio
+		local roll = math.sin(now * SWAY_FREQ) * SWAY_ROLL * ratio
+
+		local behindCF = CFrame.new(steer * Config.CAM_STEER_SHIFT + sway, Config.CAM_HEIGHT + bob, Config.CAM_BACK_DISTANCE)
+
+		local targetPos = (tcf * behindCF).Position
+		local lookPos = tcf.Position + Vector3.new(0, Config.CAM_HEIGHT * 0.4, 0)
+
+		local goalCF = CFrame.new(targetPos, lookPos) * CFrame.Angles(0, 0, math.rad(-steer * Config.CAM_STEER_TILT - roll))
+
+		cam.CFrame = cam.CFrame:Lerp(goalCF, Config.CAM_LERP_ALPHA)
+	end)
+end
+
+local function camOff()
+	camHeartbeat:Disconnect()
+	cam.CameraType = Enum.CameraType.Custom
+	cam.FieldOfView = Config.CAM_DEFAULT_FOV
+end
+
+-- quick pan to the horse before handing off to the chase cam
+local function mountCutscene(cb)
+	local tcf = travelCF(activeHorse)
+
+	cam.CameraType = Enum.CameraType.Scriptable
+	cam.FieldOfView = Config.CUTSCENE_FOV
+	letterboxToggle(true)
+
+	cam.CFrame = tcf * CFrame.new(8, 5, 8) * CFrame.Angles(0, math.rad(135), 0)
+
+	task.delay(Config.CUTSCENE_DURATION, function()
+		if not isRacing then return end -- race got cancled mid cutscene
+		letterboxToggle(false)
+		cb()
+	end)
+end
+
+UIS.InputBegan:Connect(function(inp, sunk)
+	if sunk then return end
+	local k = inp.KeyCode
+
+	if k == Enum.KeyCode.A or k == Enum.KeyCode.Left then
+		heldL = true
+		recalcSteer()
+	elseif k == Enum.KeyCode.D or k == Enum.KeyCode.Right then
+		heldR = true
+		recalcSteer()
+	elseif k == Enum.KeyCode.E and isRacing then
+		EndRaceRemote:FireServer()
+	end
 end)
 
-local NotifModule = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("NotificationModule"))
+UIS.InputEnded:Connect(function(inp)
+	local k = inp.KeyCode
+	if k == Enum.KeyCode.A or k == Enum.KeyCode.Left then
+		heldL = false
+		recalcSteer()
+	elseif k == Enum.KeyCode.D or k == Enum.KeyCode.Right then
+		heldR = false
+		recalcSteer()
+	end
+end)
 
-local dataFolder = player:WaitForChild("Data", 30)
-if not dataFolder then return end
+RaceStarted.OnClientEvent:Connect(function(horseModel)
+	activeHorse = horseModel
+	isRacing = true
+	heldL, heldR, steer = false, false, 0
 
-local tutorialVal = dataFolder:WaitForChild("Tutorial", 15)
-if not tutorialVal or tutorialVal.Value then return end
+	doFlash(Config.SCREEN_FLASH_COLOR, Config.START_FLASH_ALPHA, Config.START_FLASH_FADE_TIME)
+	linesOn()
 
-local invFolder = dataFolder:WaitForChild("Inventory")
-
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local TutorialDone = Remotes:FindFirstChild("TutorialDone") or Remotes:WaitForChild("TutorialDone", 10)
-
-local TutUI = PlayerGui:WaitForChild("TutUI", 15)
-if not TutUI then return end
-
-local Arrow = TutUI:FindFirstChild("Arrow")
-if not Arrow then return end
-
-local arrowConn = nil
-
-local function stopArrow()
-	if arrowConn then arrowConn:Disconnect(); arrowConn = nil end
-end
-
-local function moveArrow(basePos, axis)
-	stopArrow()
-	Arrow.Visible = true
-	Arrow.Position = basePos
-	local t = 0
-	arrowConn = RunService.Heartbeat:Connect(function(dt)
-		t += dt
-		local offset = math.sin(t * 2.5) * 0.008
-		if axis == "y" then
-			Arrow.Position = UDim2.new(basePos.X.Scale, basePos.X.Offset, basePos.Y.Scale + offset, basePos.Y.Offset)
-		else
-			Arrow.Position = UDim2.new(basePos.X.Scale + offset, basePos.X.Offset, basePos.Y.Scale, basePos.Y.Offset)
-		end
+	mountCutscene(function()
+		camOn()
 	end)
-end
-
-local function hideArrow()
-	stopArrow()
-	Arrow.Visible = false
-	Arrow.Rotation = 0
-end
-
-local function showArrow(pos, rotation, drift)
-	Arrow.Rotation = rotation or 0
-	moveArrow(pos, drift and "x" or "y")
-end
-
-local activeBeam, beamAtt0, beamAtt1 = nil, nil, nil
-local beamTemplate = ReplicatedStorage:FindFirstChild("BeamTemplate")
-
-local function createBeam(targetPart)
-	if activeBeam then activeBeam:Destroy() end
-	if beamAtt0 then beamAtt0:Destroy() end
-	if beamAtt1 then beamAtt1:Destroy() end
-	if not hrp or not targetPart or not beamTemplate then return end
-
-	beamAtt0 = beamTemplate.Attachment0Template:Clone()
-	beamAtt0.Parent = hrp
-	beamAtt1 = beamTemplate.Attachment1Template:Clone()
-	beamAtt1.Parent = targetPart
-
-	activeBeam = beamTemplate.Beam:Clone()
-	activeBeam.Attachment0 = beamAtt0
-	activeBeam.Attachment1 = beamAtt1
-	activeBeam.Parent = hrp
-end
-
-local function removeBeam()
-	if activeBeam then activeBeam:Destroy(); activeBeam = nil end
-	if beamAtt0 then beamAtt0:Destroy(); beamAtt0 = nil end
-	if beamAtt1 then beamAtt1:Destroy(); beamAtt1 = nil end
-end
-
-local function waitUntilClose(targetPart, radius)
-	while true do
-		task.wait(0.5)
-		if hrp and hrp.Parent and (hrp.Position - targetPart.Position).Magnitude <= radius then
-			break
-		end
-	end
-end
-
-local function getPlayerInstrument()
-	local Bunkers = workspace:FindFirstChild("Bunkers")
-	if not Bunkers then return nil end
-	for _, bunker in ipairs(Bunkers:GetChildren()) do
-		local owner = bunker:FindFirstChild("Owner")
-		if owner and owner.Value == player.Name then
-			local num = tonumber(bunker.Name:match("%d+"))
-			local instrName = num == 1 and "Instrument" or ("Instrument" .. num)
-			return workspace:FindFirstChild(instrName)
-		end
-	end
-	return nil
-end
-
-local function completeTutorial()
-	NotifModule.ClearTutorial()
-	hideArrow()
-	removeBeam()
-
-	pcall(function()
-		MarketplaceService:PromptProductPurchase(player, 3604626852)
-	end)
-
-	NotifModule.Notify("🎉 Tutorial complete! Have fun in Candy Empire!")
-
-	if TutorialDone then
-		TutorialDone:FireServer()
-	end
-end
-
-local step1_clickCity, step3_goToShop, step4_openShop, step5_buySugarBase
-local step6_goToBunker, step7_goToCookPart, step8_openCooking, step9_selectSugarBase
-local step10_pressCook, step11_clickCity2, step12_openNPCs, step13_trackNPC
-local step14_closeTracker, step15_spawnCar, step16_driveToNPC, step17_openSell, step18_sellCandy
-
-step1_clickCity = function()
-	showArrow(UDim2.new(0.554, 0, 0.12, 0), 90, false)
-	NotifModule.NotifyTutorial("👆 Click on CITY!")
-
-	local CitySpawn = workspace:FindFirstChild("CitySpawn")
-		or (workspace:FindFirstChild("City") and workspace.City:FindFirstChild("CitySpawn"))
-
-	if not CitySpawn then
-		hideArrow(); NotifModule.ClearTutorial()
-		step3_goToShop(); return
-	end
-
-	while true do
-		task.wait(0.5)
-		if hrp and hrp.Parent and (hrp.Position - CitySpawn.Position).Magnitude <= 20 then break end
-	end
-
-	hideArrow(); NotifModule.ClearTutorial()
-	step3_goToShop()
-end
-
-step3_goToShop = function()
-	NotifModule.NotifyTutorial("🏪 Go to the Shop!")
-
-	local CityFolder = workspace:FindFirstChild("City")
-	local Walt = CityFolder and CityFolder:FindFirstChild("Walt")
-	local waltHRP = Walt and Walt:FindFirstChild("HumanoidRootPart")
-
-	if not waltHRP then step4_openShop(); return end
-
-	createBeam(waltHRP)
-	waitUntilClose(waltHRP, 15)
-	removeBeam(); NotifModule.ClearTutorial()
-	step4_openShop()
-end
-
-step4_openShop = function()
-	NotifModule.NotifyTutorial("🛒 Open the Shop!")
-
-	local opened = false
-	local conns = {}
-
-	local function checkGui(sg)
-		if not sg:IsA("ScreenGui") then return end
-		if sg.Name == "GameShop" or sg.Name == "ShopUI" then
-			table.insert(conns, sg:GetPropertyChangedSignal("Enabled"):Connect(function()
-				if sg.Enabled then opened = true end
-			end))
-			if sg.Enabled then opened = true end
-		end
-	end
-
-	for _, sg in ipairs(PlayerGui:GetChildren()) do checkGui(sg) end
-	local ac = PlayerGui.ChildAdded:Connect(checkGui)
-	while not opened do task.wait(0.2) end
-	for _, c in ipairs(conns) do c:Disconnect() end
-	ac:Disconnect()
-
-	NotifModule.ClearTutorial()
-	step5_buySugarBase()
-end
-
-step5_buySugarBase = function()
-	showArrow(UDim2.new(0.795, 0, 0.41, 0), 0, true)
-	NotifModule.NotifyTutorial("🛍 Buy a Sugar Base!")
-
-	local function checkInv()
-		for _, slot in ipairs(invFolder:GetChildren()) do
-			if slot:IsA("StringValue") and slot.Value:lower():find("sugarbase") then return true end
-		end
-		return false
-	end
-
-	if not checkInv() then
-		local found = false
-		local ac = invFolder.ChildAdded:Connect(function(child)
-			if child:IsA("StringValue") and child.Value:lower():find("sugarbase") then found = true end
-		end)
-		while not found do task.wait(0.2) end
-		ac:Disconnect()
-	end
-
-	hideArrow(); NotifModule.ClearTutorial()
-	step6_goToBunker()
-end
-
-step6_goToBunker = function()
-	showArrow(UDim2.new(0.42, 0, 0.12, 0), 90, false)
-	NotifModule.NotifyTutorial("👆 Click on BUNKER!")
-
-	local Bunkers = workspace:WaitForChild("Bunkers")
-	local spawnParts = {}
-	for _, bunker in ipairs(Bunkers:GetChildren()) do
-		local sp = bunker:FindFirstChild("Spawn")
-		if sp then table.insert(spawnParts, sp) end
-	end
-
-	if #spawnParts == 0 then
-		hideArrow()
-		step7_goToCookPart(); return
-	end
-
-	local reached = false
-	while not reached do
-		task.wait(0.5)
-		if hrp and hrp.Parent then
-			for _, sp in ipairs(spawnParts) do
-				if (hrp.Position - sp.Position).Magnitude <= 20 then reached = true; break end
-			end
-		end
-	end
-
-	hideArrow(); NotifModule.ClearTutorial()
-	step7_goToCookPart()
-end
-
-step7_goToCookPart = function()
-	local instrument = nil
-	local attempts = 0
-	while not instrument and attempts < 20 do
-		instrument = getPlayerInstrument()
-		if not instrument then task.wait(0.5); attempts += 1 end
-	end
-
-	if not instrument then step8_openCooking(); return end
-
-	local cookPart = instrument:FindFirstChild("CookPart")
-	if not cookPart then step8_openCooking(); return end
-
-	NotifModule.NotifyTutorial("🍳 Go to your Cooking Station!")
-	createBeam(cookPart)
-	waitUntilClose(cookPart, 10)
-	removeBeam(); NotifModule.ClearTutorial()
-	step8_openCooking()
-end
-
-step8_openCooking = function()
-	NotifModule.NotifyTutorial("🔓 Open the Cooking Station!")
-
-	local opened = false
-	while not opened do
-		task.wait(0.3)
-		local cUI = PlayerGui:FindFirstChild("CookingUI")
-		if cUI and cUI.Enabled then opened = true end
-	end
-
-	NotifModule.ClearTutorial()
-	step9_selectSugarBase()
-end
-
-step9_selectSugarBase = function()
-	NotifModule.NotifyTutorial("✅ Select your Sugar Base ingredient!")
-
-	local selected = false
-
-	local function watchSelectedHolder()
-		local cUI = PlayerGui:FindFirstChild("CookingUI")
-		if not cUI then return end
-		local sel = cUI:FindFirstChild("Selected")
-		if not sel then return end
-		sel.DescendantAdded:Connect(function(desc)
-			if desc:IsA("ViewportFrame") then selected = true end
-		end)
-	end
-
-	watchSelectedHolder()
-
-	task.spawn(function()
-		while not selected do
-			task.wait(0.5)
-			local cUI = PlayerGui:FindFirstChild("CookingUI")
-			if not cUI then continue end
-			local sel = cUI:FindFirstChild("Selected")
-			if not sel then continue end
-			for _, d in ipairs(sel:GetDescendants()) do
-				if d:IsA("ViewportFrame") then selected = true; break end
-			end
-		end
-	end)
-
-	while not selected do task.wait(0.2) end
-	NotifModule.ClearTutorial()
-	step10_pressCook()
-end
-
-step10_pressCook = function()
-	NotifModule.NotifyTutorial("🍬 Press the COOK button!")
-
-	local cooked = false
-	local CookingComplete = Remotes:FindFirstChild("CookingComplete") or Remotes:WaitForChild("CookingComplete", 10)
-
-	if CookingComplete then
-		local conn = CookingComplete.OnClientEvent:Connect(function(candy, err)
-			if candy and not err then cooked = true end
-		end)
-		while not cooked do task.wait(0.2) end
-		conn:Disconnect()
-	else
-		task.wait(15)
-	end
-
-	task.wait(3)
-	NotifModule.ClearTutorial()
-	step11_clickCity2()
-end
-
-step11_clickCity2 = function()
-	showArrow(UDim2.new(0.554, 0, 0.12, 0), 90, false)
-	NotifModule.NotifyTutorial("👆 Click on CITY!")
-
-	local CitySpawn = workspace:FindFirstChild("CitySpawn")
-		or (workspace:FindFirstChild("City") and workspace.City:FindFirstChild("CitySpawn"))
-
-	if not CitySpawn then
-		hideArrow(); NotifModule.ClearTutorial()
-		step12_openNPCs(); return
-	end
-
-	while true do
-		task.wait(0.5)
-		if hrp and hrp.Parent and (hrp.Position - CitySpawn.Position).Magnitude <= 25 then break end
-	end
-
-	hideArrow(); NotifModule.ClearTutorial()
-	step12_openNPCs()
-end
-
-step12_openNPCs = function()
-	showArrow(UDim2.new(0.41, 0, 0.82, 0), 180, false)
-	NotifModule.NotifyTutorial("👇 Open the NPCS panel!")
-
-	local opened = false
-	local TrackerUI = PlayerGui:FindFirstChild("TrackerUI")
-
-	local function checkTracker(sg)
-		if sg.Name == "TrackerUI" then
-			sg:GetPropertyChangedSignal("Enabled"):Connect(function()
-				if sg.Enabled then opened = true end
-			end)
-			if sg.Enabled then opened = true end
-		end
-	end
-
-	if TrackerUI then checkTracker(TrackerUI) end
-	local ac = PlayerGui.ChildAdded:Connect(checkTracker)
-	while not opened do task.wait(0.2) end
-	ac:Disconnect()
-
-	hideArrow(); NotifModule.ClearTutorial()
-	step13_trackNPC()
-end
-
-step13_trackNPC = function()
-	NotifModule.NotifyTutorial("📍 Click Track on any NPC!")
-
-	local tracked = false
-	while not tracked do
-		task.wait(0.3)
-		if PlayerGui:FindFirstChild("TrackMarker", true) then tracked = true end
-	end
-
-	NotifModule.ClearTutorial()
-	step14_closeTracker()
-end
-
-step14_closeTracker = function()
-	showArrow(UDim2.new(0.41, 0, 0.82, 0), 180, false)
-	NotifModule.NotifyTutorial("❌ Close the NPC Tracker!")
-
-	local closed = false
-	local TrackerUI = PlayerGui:FindFirstChild("TrackerUI")
-
-	if TrackerUI then
-		local conn = TrackerUI:GetPropertyChangedSignal("Enabled"):Connect(function()
-			if not TrackerUI.Enabled then closed = true end
-		end)
-		while not closed do task.wait(0.2) end
-		conn:Disconnect()
-	end
-
-	hideArrow(); NotifModule.ClearTutorial()
-	step15_spawnCar()
-end
-
-step15_spawnCar = function()
-	showArrow(UDim2.new(0.58, 0, 0.82, 0), 180, false)
-	NotifModule.NotifyTutorial("🚗 Spawn your Car!")
-
-	local spawned = false
-	local SpawnJeepEvt = Remotes:FindFirstChild("SpawnJeep")
-	local evtConn = nil
-
-	if SpawnJeepEvt then
-		evtConn = SpawnJeepEvt.OnClientEvent:Connect(function()
-			spawned = true
-		end)
-	end
-
-	local pollConn = RunService.Heartbeat:Connect(function()
-		if spawned then return end
-		for _, obj in ipairs(workspace:GetDescendants()) do
-			if (obj:IsA("VehicleSeat") or obj:IsA("Seat")) and obj.Occupant and obj.Occupant.Parent == character then
-				spawned = true
-			end
-		end
-	end)
-
-	local carWatch = workspace.ChildAdded:Connect(function(child)
-		if child.Name:lower():find("jeep") or child.Name:lower():find("car") then
-			task.wait(0.5)
-			spawned = true
-		end
-	end)
-
-	while not spawned do task.wait(0.2) end
-
-	if evtConn then evtConn:Disconnect() end
-	pollConn:Disconnect()
-	carWatch:Disconnect()
-
-	hideArrow(); NotifModule.ClearTutorial()
-	step16_driveToNPC()
-end
-
-step16_driveToNPC = function()
-	NotifModule.NotifyTutorial("🚗 Drive to the tracked NPC!")
-
-	local function findTrackedNPC()
-		local marker = PlayerGui:FindFirstChild("TrackMarker", true)
-		if marker then
-			local bb = marker:IsA("BillboardGui") and marker or marker.Parent
-			if bb and bb:IsA("BillboardGui") and bb.Adornee then
-				local model = bb.Adornee.Parent
-				if model then
-					local h = model:FindFirstChild("HumanoidRootPart")
-					if h then return h end
-				end
-			end
-		end
-		for _, obj in ipairs(workspace:GetDescendants()) do
-			if obj.Name == "HumanoidRootPart" and obj.Parent:FindFirstChildOfClass("Humanoid") then
-				local isPlayer = false
-				for _, p in ipairs(Players:GetPlayers()) do
-					if p.Character == obj.Parent then isPlayer = true; break end
-				end
-				if not isPlayer then return obj end
-			end
-		end
-		return nil
-	end
-
-	local npcHRP, attempts = nil, 0
-	while not npcHRP and attempts < 20 do
-		npcHRP = findTrackedNPC()
-		if not npcHRP then task.wait(0.5); attempts += 1 end
-	end
-
-	if not npcHRP then step17_openSell(); return end
-
-	createBeam(npcHRP)
-	waitUntilClose(npcHRP, 12)
-	removeBeam(); NotifModule.ClearTutorial()
-	step17_openSell()
-end
-
-step17_openSell = function()
-	NotifModule.NotifyTutorial("🤝 Talk to the NPC to Sell!")
-
-	local opened = false
-
-	local function checkSellUI(sg)
-		if sg.Name == "SellUI" and sg:IsA("ScreenGui") then
-			sg:GetPropertyChangedSignal("Enabled"):Connect(function()
-				if sg.Enabled then opened = true end
-			end)
-			if sg.Enabled then opened = true end
-		end
-	end
-
-	for _, sg in ipairs(PlayerGui:GetChildren()) do checkSellUI(sg) end
-	local ac = PlayerGui.ChildAdded:Connect(checkSellUI)
-	while not opened do task.wait(0.2) end
-	ac:Disconnect()
-
-	NotifModule.ClearTutorial()
-	step18_sellCandy()
-end
-
-step18_sellCandy = function()
-	NotifModule.NotifyTutorial("💰 Sell your candy!")
-
-	local sold = false
-	local SellUI = PlayerGui:FindFirstChild("SellUI")
-	local honorVal = dataFolder:FindFirstChild("Honor")
-
-	if SellUI then
-		local conn = SellUI:GetPropertyChangedSignal("Enabled"):Connect(function()
-			if not SellUI.Enabled then sold = true end
-		end)
-		local hConn = nil
-		if honorVal then
-			local startH = honorVal.Value
-			hConn = honorVal:GetPropertyChangedSignal("Value"):Connect(function()
-				if honorVal.Value > startH then sold = true end
-			end)
-		end
-		while not sold do task.wait(0.2) end
-		conn:Disconnect()
-		if hConn then hConn:Disconnect() end
-	else
-		task.wait(10)
-	end
-
-	task.wait(1)
-	completeTutorial()
-end
-
-task.wait(2)
-step1_clickCity()
+end)
+
+RaceEnded.OnClientEvent:Connect(function()
+	isRacing = false
+	activeHorse = nil
+	heldL, heldR, steer = false, false, 0
+
+	letterboxToggle(false)
+	doFlash(Config.SCREEN_FLASH_COLOR, Config.RESPAWN_FLASH_ALPHA, Config.RESPAWN_FLASH_FADE_TIME) -- covers the hard cam snap back
+	camOff()
+	linesOff()
+end)
