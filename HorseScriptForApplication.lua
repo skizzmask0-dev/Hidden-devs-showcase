@@ -1,7 +1,7 @@
 -- Connected Discord-GitHub | Roblox username: dragonstarkills
 -- handles the race sequence for a horsie game that has a horse race client side: mount cutscene, screen flash transitions,
 -- speedline vfx, chase camera, HUD updates and horse outline highlighting all ui stuff and cuteness and stuff to add vfx too
-
+-- WARNING READ THIS IN THE GAME MOVE UP TO GREEN PLATFORM AND PRESS RUN AND IT ONLY WORKS ON PC NOTE THIS
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
